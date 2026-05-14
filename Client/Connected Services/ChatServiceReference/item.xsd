@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<xs:schema xmlns:tns="http://schemas.datacontract.org/2004/07/ChatLibrary" xmlns:ser="http://schemas.microsoft.com/2003/10/Serialization/" elementFormDefault="qualified" targetNamespace="http://schemas.datacontract.org/2004/07/ChatLibrary" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:import schemaLocation="http://localhost:8001/?xsd=xsd1" namespace="http://schemas.microsoft.com/2003/10/Serialization/" />
+  <xs:import schemaLocation="http://localhost:8001/?xsd=xsd3" namespace="http://schemas.microsoft.com/2003/10/Serialization/Arrays" />
+  <xs:complexType name="ArrayOfLobbyInfo">
+    <xs:sequence>
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="LobbyInfo" nillable="true" type="tns:LobbyInfo" />
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="ArrayOfLobbyInfo" nillable="true" type="tns:ArrayOfLobbyInfo" />
+  <xs:complexType name="LobbyInfo">
+    <xs:sequence>
+      <xs:element minOccurs="0" name="Id" type="ser:guid" />
+      <xs:element minOccurs="0" name="Name" nillable="true" type="xs:string" />
+      <xs:element minOccurs="0" name="PlayerCount" type="xs:int" />
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="LobbyInfo" nillable="true" type="tns:LobbyInfo" />
+  <xs:complexType name="ArrayOfPlayerGameState">
+    <xs:sequence>
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="PlayerGameState" nillable="true" type="tns:PlayerGameState" />
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="ArrayOfPlayerGameState" nillable="true" type="tns:ArrayOfPlayerGameState" />
+  <xs:complexType name="PlayerGameState">
+    <xs:sequence>
+      <xs:element xmlns:q1="http://schemas.microsoft.com/2003/10/Serialization/Arrays" minOccurs="0" name="Cards" nillable="true" type="q1:ArrayOfstring" />
+      <xs:element minOccurs="0" name="IsStanding" type="xs:boolean" />
+      <xs:element minOccurs="0" name="Name" nillable="true" type="xs:string" />
+      <xs:element minOccurs="0" name="ResultMessage" nillable="true" type="xs:string" />
+      <xs:element minOccurs="0" name="Score" type="xs:int" />
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="PlayerGameState" nillable="true" type="tns:PlayerGameState" />
+</xs:schema>
