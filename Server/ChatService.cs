@@ -3,107 +3,144 @@ using System.Collections.Generic;
 using System.Linq;
 using System.ServiceModel;
 using System.Threading.Tasks;
-using ChatLibrary; // Обов'язково підключаємо нашу бібліотеку!
+using ChatLibrary; 
 
 namespace Server
 {
-    // --- РЕАЛІЗАЦІЯ СЕРВЕРА ---
     [ServiceBehavior(InstanceContextMode = InstanceContextMode.Single, ConcurrencyMode = ConcurrencyMode.Multiple)]
     public class ChatService : IChatService
     {
-        private List<Player> _allPlayers = new List<Player>();
-        private List<Lobby> _lobbies = new List<Lobby>();
+        private readonly List<Player> _allPlayers = new List<Player>();
+        private readonly List<Lobby> _lobbies = new List<Lobby>();
         private int _nextUserId = 1;
+
+        // Об'єкт-заглушка для синхронізації потоків
+        private readonly object _lockObject = new object();
 
         public int Connect(string username)
         {
-            var p = new Player { Id = _nextUserId++, Name = username, Callback = OperationContext.Current.GetCallbackChannel<IChatServiceCallback>() };
-            _allPlayers.Add(p);
-            Console.WriteLine($"Користувач {username} підключився");
-            NotifyAllLobbyUpdate();
-            return p.Id;
+            lock (_lockObject) // Блокуємо потік, щоб ID та додавання в список були атомарними
+            {
+                var p = new Player 
+                { 
+                    Id = _nextUserId++, 
+                    Name = username, 
+                    Callback = OperationContext.Current.GetCallbackChannel<IChatServiceCallback>() 
+                };
+                _allPlayers.Add(p);
+                Console.WriteLine($"Користувач {username} підключився");
+                NotifyAllLobbyUpdate();
+                return p.Id;
+            }
         }
 
         public Guid CreateLobby(string lobbyName, int creatorId)
         {
-            var lobby = new Lobby(lobbyName);
-            _lobbies.Add(lobby);
-            JoinLobby(lobby.Id, creatorId);
-            return lobby.Id;
+            lock (_lockObject)
+            {
+                var lobby = new Lobby(lobbyName);
+                _lobbies.Add(lobby);
+                JoinLobby(lobby.Id, creatorId);
+                return lobby.Id;
+            }
         }
 
         public bool JoinLobby(Guid lobbyId, int playerId)
         {
-            var lobby = _lobbies.FirstOrDefault(l => l.Id == lobbyId);
-            var player = _allPlayers.FirstOrDefault(p => p.Id == playerId);
-            if (lobby != null && player != null)
+            lock (_lockObject)
             {
-                if (!lobby.Players.Contains(player))
+                var lobby = _lobbies.FirstOrDefault(l => l.Id == lobbyId);
+                var player = _allPlayers.FirstOrDefault(p => p.Id == playerId);
+                if (lobby != null && player != null)
                 {
-                    RemovePlayerFromAllLobbies(player);
-                    player.IsStanding = lobby.IsGameInProgress;
-                    player.LastResult = lobby.IsGameInProgress ? "ЧЕКАЄ..." : "";
-                    lobby.Players.Add(player);
-                    SendLobbyMessage(lobbyId, 0, $"Гравець {player.Name} приєднався.");
-                    NotifyAllLobbyUpdate();
-                    BroadcastGameState(lobby);
-
-                    if (!lobby.IsGameInProgress && lobby.Players.Count > 0)
+                    if (!lobby.Players.Contains(player))
                     {
-                        Task.Run(() => StartGameLoop(lobby));
+                        RemovePlayerFromAllLobbies(player);
+                        player.IsStanding = lobby.IsGameInProgress;
+                        player.LastResult = lobby.IsGameInProgress ? "ЧЕКАЄ..." : "";
+                        lobby.Players.Add(player);
+                        SendLobbyMessage(lobbyId, 0, $"Гравець {player.Name} приєднався.");
+                        NotifyAllLobbyUpdate();
+                        BroadcastGameState(lobby);
+
+                        if (!lobby.IsGameInProgress && lobby.Players.Count > 0)
+                        {
+                            Task.Run(() => StartGameLoop(lobby));
+                        }
                     }
+                    return true;
                 }
-                return true;
+                return false;
             }
-            return false;
         }
 
         private async void StartGameLoop(Lobby lobby)
         {
-            if (lobby.IsGameInProgress) return;
-            lobby.IsGameInProgress = true;
+            // Перевірка стану гри має бути синхронізованою
+            lock (_lockObject)
+            {
+                if (lobby.IsGameInProgress) return;
+                lobby.IsGameInProgress = true;
 
-            foreach (var p in lobby.Players) { p.LastResult = ""; p.Hand.Clear(); p.IsStanding = false; }
-            lobby.DealerHand.Clear();
+                foreach (var p in lobby.Players) { p.LastResult = ""; p.Hand.Clear(); p.IsStanding = false; }
+                lobby.DealerHand.Clear();
+            }
 
             for (int i = 10; i > 0; i--)
             {
-                if (!_lobbies.Contains(lobby) || lobby.Players.Count == 0) { lobby.IsGameInProgress = false; return; }
-                lobby.GameStatus = $"Тасування... Старт через {i}с";
-                BroadcastGameState(lobby);
+                lock (_lockObject)
+                {
+                    if (!_lobbies.Contains(lobby) || lobby.Players.Count == 0) { lobby.IsGameInProgress = false; return; }
+                    lobby.GameStatus = $"Тасування... Старт через {i}с";
+                    BroadcastGameState(lobby);
+                }
                 await Task.Delay(1000);
             }
 
-            if (!_lobbies.Contains(lobby) || lobby.Players.Count == 0) { lobby.IsGameInProgress = false; return; }
-
-            lobby.Deck = new Deck();
-            lobby.Deck.Shuffle();
-            lobby.DealerHand.Add(lobby.Deck.Draw());
-
-            foreach (var p in lobby.Players)
+            lock (_lockObject)
             {
-                p.Hand.Clear();
-                p.Hand.Add(lobby.Deck.Draw());
-                p.Hand.Add(lobby.Deck.Draw());
-                p.LastResult = "ХІД ГРАВЦЯ";
-                if (p.Score == 21) { p.IsStanding = true; p.LastResult = "БЛЕКДЖЕК!"; }
+                if (!_lobbies.Contains(lobby) || lobby.Players.Count == 0) { lobby.IsGameInProgress = false; return; }
+
+                lobby.Deck = new Deck();
+                lobby.Deck.Shuffle();
+                lobby.DealerHand.Add(lobby.Deck.Draw());
+
+                foreach (var p in lobby.Players)
+                {
+                    p.Hand.Clear();
+                    p.Hand.Add(lobby.Deck.Draw());
+                    p.Hand.Add(lobby.Deck.Draw());
+                    p.LastResult = "ХІД ГРАВЦЯ";
+                    if (p.Score == 21) { p.IsStanding = true; p.LastResult = "БЛЕКДЖЕК!"; }
+                }
             }
 
             for (int i = 20; i >= 0; i--)
             {
-                if (!_lobbies.Contains(lobby) || lobby.Players.Count == 0) { lobby.IsGameInProgress = false; return; }
-                if (lobby.Players.All(p => p.IsStanding)) break;
-                lobby.GameStatus = $"Ваш хід! Залишилось: {i}с";
-                BroadcastGameState(lobby);
+                bool allStanding;
+                lock (_lockObject)
+                {
+                    if (!_lobbies.Contains(lobby) || lobby.Players.Count == 0) { lobby.IsGameInProgress = false; return; }
+                    allStanding = lobby.Players.All(p => p.IsStanding);
+                    if (!allStanding)
+                    {
+                        lobby.GameStatus = $"Ваш хід! Залишилось: {i}с";
+                        BroadcastGameState(lobby);
+                    }
+                }
+                if (allStanding) break;
                 await Task.Delay(1000);
             }
 
-            if (!_lobbies.Contains(lobby) || lobby.Players.Count == 0) { lobby.IsGameInProgress = false; return; }
-
-            foreach (var p in lobby.Players.Where(p => !p.IsStanding))
+            lock (_lockObject)
             {
-                p.IsStanding = true;
-                if (p.LastResult == "ХІД ГРАВЦЯ") p.LastResult = "ЧАС ВИЙШОВ";
+                if (!_lobbies.Contains(lobby) || lobby.Players.Count == 0) { lobby.IsGameInProgress = false; return; }
+
+                foreach (var p in lobby.Players.Where(p => !p.IsStanding))
+                {
+                    p.IsStanding = true;
+                    if (p.LastResult == "ХІД ГРАВЦЯ") p.LastResult = "ЧАС ВИЙШОВ";
+                }
             }
 
             await DealerTurn(lobby);
@@ -111,62 +148,88 @@ namespace Server
 
         public void Hit(Guid lobbyId, int playerId)
         {
-            var lobby = _lobbies.FirstOrDefault(l => l.Id == lobbyId);
-            var player = lobby?.Players.FirstOrDefault(x => x.Id == playerId);
-            if (lobby == null || player == null || !lobby.IsGameInProgress || player.IsStanding) return;
+            lock (_lockObject)
+            {
+                var lobby = _lobbies.FirstOrDefault(l => l.Id == lobbyId);
+                var player = lobby?.Players.FirstOrDefault(x => x.Id == playerId);
+                if (lobby == null || player == null || !lobby.IsGameInProgress || player.IsStanding) return;
 
-            player.Hand.Add(lobby.Deck.Draw());
-            if (player.Score > 21) { player.IsStanding = true; player.LastResult = "ПЕРЕБІР!"; }
-            BroadcastGameState(lobby);
+                player.Hand.Add(lobby.Deck.Draw());
+                if (player.Score > 21) { player.IsStanding = true; player.LastResult = "ПЕРЕБІР!"; }
+                BroadcastGameState(lobby);
+            }
         }
 
         public void Stand(Guid lobbyId, int playerId)
         {
-            var lobby = _lobbies.FirstOrDefault(l => l.Id == lobbyId);
-            var player = lobby?.Players.FirstOrDefault(x => x.Id == playerId);
-            if (lobby == null || player == null || !lobby.IsGameInProgress || player.IsStanding) return;
+            lock (_lockObject)
+            {
+                var lobby = _lobbies.FirstOrDefault(l => l.Id == lobbyId);
+                var player = lobby?.Players.FirstOrDefault(x => x.Id == playerId);
+                if (lobby == null || player == null || !lobby.IsGameInProgress || player.IsStanding) return;
 
-            player.IsStanding = true;
-            player.LastResult = "ПАС";
-            BroadcastGameState(lobby);
+                player.IsStanding = true;
+                player.LastResult = "ПАС";
+                BroadcastGameState(lobby);
+            }
         }
 
         private async Task DealerTurn(Lobby lobby)
         {
-            lobby.GameStatus = "Хід дилера...";
-            BroadcastGameState(lobby);
+            lock (_lockObject)
+            {
+                lobby.GameStatus = "Хід дилера...";
+                BroadcastGameState(lobby);
+            }
             await Task.Delay(1000);
 
-            // Використовуємо правильний підрахунок для дилера
-            while (GetScore(lobby.DealerHand) < 17)
+            while (true)
             {
-                lobby.DealerHand.Add(lobby.Deck.Draw());
-                BroadcastGameState(lobby);
+                bool needCard;
+                lock (_lockObject)
+                {
+                    needCard = GetScore(lobby.DealerHand) < 17;
+                    if (needCard)
+                    {
+                        lobby.DealerHand.Add(lobby.Deck.Draw());
+                        BroadcastGameState(lobby);
+                    }
+                }
+                if (!needCard) break;
                 await Task.Delay(1500);
             }
 
-            int dealerScore = GetScore(lobby.DealerHand);
-            bool dealerBust = dealerScore > 21;
-
-            foreach (var p in lobby.Players)
+            lock (_lockObject)
             {
-                int pScore = p.Score;
-                if (p.Hand.Count == 0 || p.LastResult == "БЛЕКДЖЕК!" || p.LastResult == "ПЕРЕБІР!") continue;
+                int dealerScore = GetScore(lobby.DealerHand);
+                bool dealerBust = dealerScore > 21;
 
-                if (dealerBust) p.LastResult = $"ВИГРАВ! ({pScore})";
-                else if (pScore > dealerScore) p.LastResult = $"ВИГРАВ! ({pScore})";
-                else if (pScore < dealerScore) p.LastResult = $"Програв ({pScore})";
-                else p.LastResult = $"Нічия ({pScore})";
+                foreach (var p in lobby.Players)
+                {
+                    int pScore = p.Score;
+                    if (p.Hand.Count == 0 || p.LastResult == "БЛЕКДЖЕК!" || p.LastResult == "ПЕРЕБІР!") continue;
+
+                    if (dealerBust) p.LastResult = $"ВИГРАВ! ({pScore})";
+                    else if (pScore > dealerScore) p.LastResult = $"ВИГРАВ! ({pScore})";
+                    else if (pScore < dealerScore) p.LastResult = $"Програв ({pScore})";
+                    else p.LastResult = $"Нічия ({pScore})";
+                }
+
+                lobby.GameStatus = "Раунд завершено!";
+                lobby.IsGameInProgress = false;
+                BroadcastGameState(lobby);
             }
 
-            lobby.GameStatus = "Раунд завершено!";
-            lobby.IsGameInProgress = false;
-            BroadcastGameState(lobby);
-
             await Task.Delay(6000);
-            if (_lobbies.Contains(lobby) && lobby.Players.Count > 0) { Task.Run(() => StartGameLoop(lobby)); }
+            
+            lock (_lockObject)
+            {
+                if (_lobbies.Contains(lobby) && lobby.Players.Count > 0) 
+                { 
+                    Task.Run(() => StartGameLoop(lobby)); 
+                }
+            }
         }
-
 
         private int GetScore(List<Card> hand)
         {
@@ -175,30 +238,42 @@ namespace Server
             while (score > 21 && aces > 0) { score -= 10; aces--; }
             return score;
         }
+
         private void BroadcastGameState(Lobby lobby)
         {
             string[] dealerCards = lobby.DealerHand.Select(c => c.ToString()).ToArray();
-            int dealerScore = GetScore(lobby.DealerHand); // Правильний рахунок
+            int dealerScore = GetScore(lobby.DealerHand);
 
-            // Проходимось по кожному гравцю окремо
-            foreach (var targetPlayer in lobby.Players.ToList())
+            var playersToDisconnect = new List<int>();
+            var playersList = lobby.Players.ToList();
+
+            foreach (var targetPlayer in playersList)
             {
-                PlayerGameState[] playerStates = lobby.Players.Select(p => new PlayerGameState
+                PlayerGameState[] playerStates = playersList.Select(p => new PlayerGameState
                 {
                     Name = p.Name,
-                    // Якщо це карти ЦЬОГО гравця - показуємо, якщо чужі - відправляємо "??"
                     Cards = (p.Id == targetPlayer.Id)
                             ? p.Hand.Select(c => c.ToString()).ToArray()
                             : p.Hand.Select(c => "??").ToArray(),
-
-                    // Ховаємо рахунок чужих гравців
                     Score = (p.Id == targetPlayer.Id) ? p.Score : 0,
                     IsStanding = p.IsStanding,
                     ResultMessage = p.LastResult
                 }).ToArray();
 
-                try { targetPlayer.Callback.UpdateGameTable(lobby.GameStatus, dealerScore.ToString(), dealerCards, playerStates); }
-                catch { Disconnect(targetPlayer.Id); }
+                try 
+                { 
+                    targetPlayer.Callback.UpdateGameTable(lobby.GameStatus, dealerScore.ToString(), dealerCards, playerStates); 
+                }
+                catch 
+                { 
+                    playersToDisconnect.Add(targetPlayer.Id); 
+                }
+            }
+
+            // Відключаємо проблемних гравців поза циклом відправки, щоб уникнути крашу колекції
+            foreach (var id in playersToDisconnect)
+            {
+                Disconnect(id);
             }
         }
 
@@ -215,44 +290,72 @@ namespace Server
             }
         }
 
-        public List<LobbyInfo> GetActiveLobbies() => _lobbies.Select(l => new LobbyInfo { Id = l.Id, Name = l.Name, PlayerCount = l.Players.Count }).ToList();
-        public void SendLobbyMessage(Guid lobbyId, int senderId, string message)
+        public List<LobbyInfo> GetActiveLobbies()
         {
-            var lobby = _lobbies.FirstOrDefault(l => l.Id == lobbyId);
-            if (lobby == null) return;
-
-            // Визначаємо, хто відправив повідомлення (якщо ID 0 - це пише сам сервер)
-            string senderName = senderId == 0 ? "СЕРВЕР" :
-                               _allPlayers.FirstOrDefault(p => p.Id == senderId)?.Name ?? "Анонім";
-
-            // Розсилаємо повідомлення всім гравцям у цьому лобі
-            foreach (var p in lobby.Players.ToList())
+            lock (_lockObject)
             {
-                try
-                {
-                    p.Callback.SendMessageToClient(senderName, message);
-                }
-                catch
-                {
-                    // Якщо гравець відключився з помилкою, видаляємо його
-                    Disconnect(p.Id);
-                }
+                return _lobbies.Select(l => new LobbyInfo { Id = l.Id, Name = l.Name, PlayerCount = l.Players.Count }).ToList();
             }
         }
+
+        public void SendLobbyMessage(Guid lobbyId, int senderId, string message)
+        {
+            Lobby lobby;
+            string senderName;
+
+            lock (_lockObject)
+            {
+                lobby = _lobbies.FirstOrDefault(l => l.Id == lobbyId);
+                if (lobby == null) return;
+
+                senderName = senderId == 0 ? "СЕРВЕР" :
+                             _allPlayers.FirstOrDefault(p => p.Id == senderId)?.Name ?? "Анонім";
+            }
+
+            var playersToDisconnect = new List<int>();
+            var targetPlayers = lobby.Players.ToList();
+
+            foreach (var p in targetPlayers)
+            {
+                try { p.Callback.SendMessageToClient(senderName, message); }
+                catch { playersToDisconnect.Add(p.Id); }
+            }
+
+            foreach (var id in playersToDisconnect)
+            {
+                Disconnect(id);
+            }
+        }
+
         private void NotifyAllLobbyUpdate()
         {
             var info = GetActiveLobbies();
-            // .ToList() робить копію списку гравців для безпечної розсилки
-            foreach (var p in _allPlayers.ToList())
+            List<Player> playersCopy;
+
+            lock (_lockObject)
+            {
+                playersCopy = _allPlayers.ToList();
+            }
+
+            foreach (var p in playersCopy)
             {
                 try { p.Callback.UpdateLobbyList(info); }
-                catch { }
+               catch { }
             }
         }
+
         public void Disconnect(int id)
         {
-            var player = _allPlayers.FirstOrDefault(p => p.Id == id);
-            if (player != null) { _allPlayers.Remove(player); RemovePlayerFromAllLobbies(player); NotifyAllLobbyUpdate(); }
+            lock (_lockObject)
+            {
+                var player = _allPlayers.FirstOrDefault(p => p.Id == id);
+                if (player != null) 
+                { 
+                    _allPlayers.Remove(player); 
+                    RemovePlayerFromAllLobbies(player); 
+                    NotifyAllLobbyUpdate(); 
+                }
+            }
         }
     }
 }
