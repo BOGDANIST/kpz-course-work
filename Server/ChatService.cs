@@ -3,11 +3,10 @@ using System.Collections.Generic;
 using System.Linq;
 using System.ServiceModel;
 using System.Threading.Tasks;
-using ChatLibrary; // Обов'язково підключаємо нашу бібліотеку!
+using ChatLibrary;
 
 namespace Server
 {
-    // --- РЕАЛІЗАЦІЯ СЕРВЕРА ---
     [ServiceBehavior(InstanceContextMode = InstanceContextMode.Single, ConcurrencyMode = ConcurrencyMode.Multiple)]
     public class ChatService : IChatService
     {
@@ -111,9 +110,8 @@ namespace Server
 
         public void Hit(Guid lobbyId, int playerId)
         {
-            var lobby = _lobbies.FirstOrDefault(l => l.Id == lobbyId);
-            var player = lobby?.Players.FirstOrDefault(x => x.Id == playerId);
-            if (lobby == null || player == null || !lobby.IsGameInProgress || player.IsStanding) return;
+            var (lobby, player) = GetActivePlayerInLobby(lobbyId, playerId);
+            if (lobby == null || player == null) return;
 
             player.Hand.Add(lobby.Deck.Draw());
             if (player.Score > 21) { player.IsStanding = true; player.LastResult = "ПЕРЕБІР!"; }
@@ -122,13 +120,23 @@ namespace Server
 
         public void Stand(Guid lobbyId, int playerId)
         {
-            var lobby = _lobbies.FirstOrDefault(l => l.Id == lobbyId);
-            var player = lobby?.Players.FirstOrDefault(x => x.Id == playerId);
-            if (lobby == null || player == null || !lobby.IsGameInProgress || player.IsStanding) return;
+            var (lobby, player) = GetActivePlayerInLobby(lobbyId, playerId);
+            if (lobby == null || player == null) return;
 
             player.IsStanding = true;
             player.LastResult = "ПАС";
             BroadcastGameState(lobby);
+        }
+
+        private (Lobby lobby, Player player) GetActivePlayerInLobby(Guid lobbyId, int playerId)
+        {
+            var lobby = _lobbies.FirstOrDefault(l => l.Id == lobbyId);
+            var player = lobby?.Players.FirstOrDefault(x => x.Id == playerId);
+
+            if (lobby == null || player == null || !lobby.IsGameInProgress || player.IsStanding)
+                return (null, null);
+
+            return (lobby, player);
         }
 
         private async Task DealerTurn(Lobby lobby)
@@ -137,7 +145,6 @@ namespace Server
             BroadcastGameState(lobby);
             await Task.Delay(1000);
 
-            // Використовуємо правильний підрахунок для дилера
             while (GetScore(lobby.DealerHand) < 17)
             {
                 lobby.DealerHand.Add(lobby.Deck.Draw());
@@ -167,7 +174,6 @@ namespace Server
             if (_lobbies.Contains(lobby) && lobby.Players.Count > 0) { Task.Run(() => StartGameLoop(lobby)); }
         }
 
-
         private int GetScore(List<Card> hand)
         {
             int score = hand.Sum(c => c.Value);
@@ -175,23 +181,20 @@ namespace Server
             while (score > 21 && aces > 0) { score -= 10; aces--; }
             return score;
         }
+
         private void BroadcastGameState(Lobby lobby)
         {
             string[] dealerCards = lobby.DealerHand.Select(c => c.ToString()).ToArray();
-            int dealerScore = GetScore(lobby.DealerHand); // Правильний рахунок
+            int dealerScore = GetScore(lobby.DealerHand);
 
-            // Проходимось по кожному гравцю окремо
             foreach (var targetPlayer in lobby.Players.ToList())
             {
                 PlayerGameState[] playerStates = lobby.Players.Select(p => new PlayerGameState
                 {
                     Name = p.Name,
-                    // Якщо це карти ЦЬОГО гравця - показуємо, якщо чужі - відправляємо "??"
                     Cards = (p.Id == targetPlayer.Id)
                             ? p.Hand.Select(c => c.ToString()).ToArray()
                             : p.Hand.Select(c => "??").ToArray(),
-
-                    // Ховаємо рахунок чужих гравців
                     Score = (p.Id == targetPlayer.Id) ? p.Score : 0,
                     IsStanding = p.IsStanding,
                     ResultMessage = p.LastResult
@@ -216,39 +219,32 @@ namespace Server
         }
 
         public List<LobbyInfo> GetActiveLobbies() => _lobbies.Select(l => new LobbyInfo { Id = l.Id, Name = l.Name, PlayerCount = l.Players.Count }).ToList();
+
         public void SendLobbyMessage(Guid lobbyId, int senderId, string message)
         {
             var lobby = _lobbies.FirstOrDefault(l => l.Id == lobbyId);
             if (lobby == null) return;
 
-            // Визначаємо, хто відправив повідомлення (якщо ID 0 - це пише сам сервер)
             string senderName = senderId == 0 ? "СЕРВЕР" :
                                _allPlayers.FirstOrDefault(p => p.Id == senderId)?.Name ?? "Анонім";
 
-            // Розсилаємо повідомлення всім гравцям у цьому лобі
             foreach (var p in lobby.Players.ToList())
             {
-                try
-                {
-                    p.Callback.SendMessageToClient(senderName, message);
-                }
-                catch
-                {
-                    // Якщо гравець відключився з помилкою, видаляємо його
-                    Disconnect(p.Id);
-                }
+                try { p.Callback.SendMessageToClient(senderName, message); }
+                catch { Disconnect(p.Id); }
             }
         }
+
         private void NotifyAllLobbyUpdate()
         {
             var info = GetActiveLobbies();
-            // .ToList() робить копію списку гравців для безпечної розсилки
             foreach (var p in _allPlayers.ToList())
             {
                 try { p.Callback.UpdateLobbyList(info); }
                 catch { }
             }
         }
+
         public void Disconnect(int id)
         {
             var player = _allPlayers.FirstOrDefault(p => p.Id == id);
