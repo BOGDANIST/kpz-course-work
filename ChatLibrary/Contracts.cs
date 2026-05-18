@@ -1,17 +1,37 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Runtime.Serialization;
 using System.ServiceModel;
 
 namespace ChatLibrary
 {
+    public enum CardSuit
+    {
+        Hearts,
+        Diamonds,
+        Clubs,
+        Spades
+    }
+    public enum CardRank
+    {
+        Two, Three, Four, Five, Six, Seven, Eight, Nine, Ten,
+        Jack, Queen, King, Ace
+    }
+    public enum PlayerStatus
+    {
+        Active,
+        Standing,
+        Busted,
+        Blackjack
+    }
+
     [DataContract]
     public class Card
     {
-        [DataMember] public string Suit { get; set; }
-        [DataMember] public string Rank { get; set; }
+        [DataMember] public CardSuit Suit { get; set; }
+        [DataMember] public CardRank Rank { get; set; }   
         [DataMember] public int Value { get; set; }
-        public override string ToString() => $"{Rank}{Suit}";
+        public override string ToString() => $"{Rank} of {Suit}";
     }
 
     [DataContract]
@@ -26,9 +46,9 @@ namespace ChatLibrary
     public class PlayerGameState
     {
         [DataMember] public string Name { get; set; }
-        [DataMember] public string[] Cards { get; set; }
+        [DataMember] public string[] Cards { get; set; } 
         [DataMember] public int Score { get; set; }
-        [DataMember] public bool IsStanding { get; set; }
+        [DataMember] public PlayerStatus Status { get; set; }     
         [DataMember] public string ResultMessage { get; set; }
     }
 
